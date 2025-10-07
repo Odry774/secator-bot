@@ -1,17 +1,26 @@
 import asyncio
 import os
+import shutil
 import uuid
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message, FSInputFile
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import (
+    Message,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    CallbackQuery,
+)
 
 from .config import CFG
 from .counters import (
     get_next_number, set_counter, get_status,
-    set_chat_tag, get_chat_tag,
+    set_chat_tag, get_chat_tag, get_chat_tags,
+    set_chat_mode, get_chat_mode,
     set_last_pack_info, get_last_pack_info, today_key
 )
 from .archive_utils import (
@@ -30,6 +39,94 @@ ensure_dir(WORK_DIR); ensure_dir(BASES_DIR); ensure_dir(OUT_DIR)
 # Память для ожидания пароля: chat_id -> dict
 PENDING = {}
 
+MODE_LABELS = {
+    "auto": "🤖 Авто",
+    "pack": "📦 Пачка",
+    "txt": "📝 TXT",
+}
+
+
+def describe_mode(mode: str) -> str:
+    if mode == "pack":
+        return "Пачки → сортировка в TXT"
+    if mode == "txt":
+        return "TXT → сортировка в логи"
+    return "Автоопределение по файлу"
+
+
+def make_menu_text(chat_id: int) -> str:
+    tag = get_chat_tag(chat_id) or "не выбран"
+    mode = get_chat_mode(chat_id)
+    mode_desc = describe_mode(mode)
+    return (
+        "Готов к работе. Команды:\n"
+        "/tag <supplier> — установить тег\n"
+        "/setcounter <supplier> <n> — задать счётчик\n"
+        "/status — показать счётчики\n"
+        "/cancel — отменить ожидание\n\n"
+        f"Текущий тег: {tag}\n"
+        f"Режим загрузки: {mode_desc}\n\n"
+        "Используйте кнопки ниже, чтобы управлять тегами и режимом."
+    )
+
+
+def build_main_menu(chat_id: int) -> InlineKeyboardMarkup:
+    mode = get_chat_mode(chat_id)
+    def mode_button(target: str) -> InlineKeyboardButton:
+        label = MODE_LABELS[target]
+        if mode == target:
+            label = f"{label} ✅"
+        return InlineKeyboardButton(text=label, callback_data=f"mode:set:{target}")
+
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Добавить тег", callback_data="tag:add")],
+        [InlineKeyboardButton(text="📂 Выбрать тег", callback_data="tag:list")],
+        [mode_button("pack"), mode_button("txt")],
+        [mode_button("auto")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_tag_selection_keyboard(tags: list[str]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=tag, callback_data=f"tag:set:{tag}")]
+        for tag in sorted(tags, key=str.lower)
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_menu(message: Message, *, edit: bool = False):
+    text = make_menu_text(message.chat.id)
+    markup = build_main_menu(message.chat.id)
+    if edit:
+        try:
+            await message.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest:
+            await message.answer(text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
+
+
+def is_txt_document_message(m: Message) -> bool:
+    if not m.document:
+        return False
+    name = (m.document.file_name or "").lower()
+    if name.endswith(".txt"):
+        return True
+    if name.endswith(".txt.zip") or name.endswith(".txt.rar") or name.endswith(".txt.7z"):
+        return True
+    if m.caption and "txt" in m.caption.lower():
+        return True
+    return False
+
+
+def resolve_processing_mode(m: Message) -> str:
+    mode = get_chat_mode(m.chat.id)
+    if mode in {"pack", "txt"}:
+        return mode
+    return "txt" if is_txt_document_message(m) else "pack"
+
 def moscow_now() -> datetime:
     return datetime.now(CFG.tz_moscow)
 
@@ -47,14 +144,12 @@ def logs_zip_name(tag: str, n: int, dt: datetime) -> str:
 
 @dp.message(Command("start"))
 async def cmd_start(m: Message):
-    await m.answer(
-        "Готов. Команды:\n"
-        "/tag <supplier>\n"
-        "/setcounter <supplier> <n>\n"
-        "/status\n"
-        "/cancel\n\n"
-        "Пришлите архив (ZIP/RAR/7Z). Если нужен пароль — пришлю запрос."
-    )
+    await show_menu(m)
+
+
+@dp.message(Command("menu"))
+async def cmd_menu(m: Message):
+    await show_menu(m)
 
 @dp.message(Command("tag"))
 async def cmd_tag(m: Message, command: CommandObject):
@@ -64,6 +159,7 @@ async def cmd_tag(m: Message, command: CommandObject):
     tag = sanitize_tag(command.args.strip())
     set_chat_tag(m.chat.id, tag)
     await m.answer(f"Тег установлен: {tag}")
+    await show_menu(m)
 
 @dp.message(Command("setcounter"))
 async def cmd_setcounter(m: Message, command: CommandObject):
@@ -93,6 +189,67 @@ async def cmd_cancel(m: Message):
     PENDING.pop(m.chat.id, None)
     await m.answer("Ок, отменил ожидание пароля.")
 
+
+@dp.callback_query(F.data == "menu:main")
+async def cb_menu_main(c: CallbackQuery):
+    if not c.message:
+        await c.answer()
+        return
+    await show_menu(c.message, edit=True)
+    await c.answer()
+
+
+@dp.callback_query(F.data == "tag:add")
+async def cb_tag_add(c: CallbackQuery):
+    if not c.message:
+        await c.answer()
+        return
+    pending = PENDING.get(c.message.chat.id)
+    if pending and pending.get("type") in {"extract", "txtpwd"}:
+        await c.answer("Сначала завершите текущую обработку архива.", show_alert=True)
+        return
+    PENDING[c.message.chat.id] = {"type": "new_tag"}
+    await c.answer("Введите название тега сообщением.")
+    await c.message.answer("Пришлите название тега. Допустимы буквы, цифры, ._-.")
+
+
+@dp.callback_query(F.data == "tag:list")
+async def cb_tag_list(c: CallbackQuery):
+    if not c.message:
+        await c.answer()
+        return
+    tags = get_chat_tags(c.message.chat.id)
+    if not tags:
+        await c.answer("Сначала добавьте тег.", show_alert=True)
+        return
+    await c.message.edit_text("Выберите тег:", reply_markup=build_tag_selection_keyboard(tags))
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("tag:set:"))
+async def cb_tag_set(c: CallbackQuery):
+    if not c.message or not c.data:
+        await c.answer()
+        return
+    tag = c.data.split(":", 2)[2]
+    set_chat_tag(c.message.chat.id, tag)
+    await c.answer(f"Тег установлен: {tag}")
+    await show_menu(c.message, edit=True)
+
+
+@dp.callback_query(F.data.startswith("mode:set:"))
+async def cb_mode_set(c: CallbackQuery):
+    if not c.message or not c.data:
+        await c.answer()
+        return
+    target = c.data.split(":", 2)[2]
+    if target not in {"auto", "pack", "txt"}:
+        await c.answer()
+        return
+    set_chat_mode(c.message.chat.id, target)
+    await c.answer(f"Режим: {describe_mode(target)}")
+    await show_menu(c.message, edit=True)
+
 def _get_tag_from_message(m: Message) -> str | None:
     # Из подписи вида "tag=huyar" или из установленного чатом тэга.
     tag = None
@@ -107,8 +264,7 @@ async def _download_document(m: Message, path: str):
     file = await m.bot.get_file(m.document.file_id)
     await m.bot.download_file(file.file_path, destination=path)
 
-@dp.message(F.document)
-async def on_document(m: Message):
+async def handle_pack_upload(m: Message):
     name = m.document.file_name or "file.bin"
     lower = name.lower()
     is_archive = lower.endswith((".zip", ".rar", ".7z"))
@@ -169,6 +325,25 @@ async def on_document(m: Message):
     rm_tree(tmp_path); rm_tree(sorted_dir)
 
 @dp.message(F.text & (F.chat.id.func(lambda cid: cid in PENDING)))
+async def on_new_tag(m: Message):
+    st = PENDING.get(m.chat.id)
+    if not st or st.get("type") != "new_tag":
+        return
+    raw = m.text.strip()
+    if not raw:
+        await m.answer("Название тега не может быть пустым. Попробуйте ещё раз или /cancel.")
+        return
+    clean = sanitize_tag(raw)
+    set_chat_tag(m.chat.id, clean)
+    PENDING.pop(m.chat.id, None)
+    if clean != raw:
+        await m.answer(f"Тег сохранён как: {clean}")
+    else:
+        await m.answer(f"Тег сохранён: {clean}")
+    await show_menu(m)
+
+
+@dp.message(F.text & (F.chat.id.func(lambda cid: cid in PENDING)))
 async def on_password(m: Message):
     st = PENDING.get(m.chat.id)
     if not st or st.get("type") != "extract":
@@ -201,10 +376,15 @@ async def on_password(m: Message):
     rm_tree(st["tmp_path"]); rm_tree(sorted_dir)
     PENDING.pop(m.chat.id, None)
 
-@dp.message(F.document & F.document.file_name.regex("(?i)\.txt(\.zip|\.rar|\.7z)?$") | (F.caption and F.caption.lower().contains("txt")))
-async def on_txt_pack(m: Message):
+async def handle_txt_upload(m: Message):
     """Принимаем архив с .txt. Берём последний pack-info для чата (tag, n, day),
     запускаем Антисекатор по всем 'Input logs*' в BASES_DIR."""
+    if not m.document:
+        return
+    if not is_txt_document_message(m):
+        await m.answer("Пришлите .txt или архив с .txt для сортировки в логи.")
+        return
+
     last = get_last_pack_info(m.chat.id)
     tag = _get_tag_from_message(m) or (last and last["tag"])
     if not tag:
@@ -215,34 +395,34 @@ async def on_txt_pack(m: Message):
     if last and last["tag"] == tag and last["day"] == today_key(dt):
         n = last["n"]
     else:
-        from .counters import _load, _save, today_key, get_next_number, set_counter
-        _ = get_next_number(tag, dt)
-        s = _load()
-        day = today_key(dt)
-        n = s["counters"][day][tag] - 1
-        set_counter(tag, dt, n)  # фиксируем как «следующее» = n
+        n = get_next_number(tag, dt)
 
     tmp_id = uuid.uuid4().hex
-    tmp_path = os.path.join(WORK_DIR, f"{tmp_id}-{m.document.file_name}")
+    original_name = m.document.file_name or "logs.txt"
+    tmp_path = os.path.join(WORK_DIR, f"{tmp_id}-{original_name}")
     await _download_document(m, tmp_path)
 
     txt_dir = os.path.join(WORK_DIR, f"txt-{tmp_id}")
     os.makedirs(txt_dir, exist_ok=True)
-    ok, msg = await extract_with_7z(tmp_path, txt_dir, password=None)
-    if not ok and msg == "password_required_or_wrong":
-        PENDING[m.chat.id] = {
-            "type": "txtpwd",
-            "tmp_path": tmp_path,
-            "txt_dir": txt_dir,
-            "tag": tag,
-            "n": n,
-        }
-        await m.answer("Архив с .txt защищён. Пришлите пароль одним сообщением или /cancel.")
-        return
-    elif not ok:
-        await m.answer("Не удалось распаковать архив с .txt.")
-        rm_tree(tmp_path); rm_tree(txt_dir)
-        return
+    lower_name = original_name.lower()
+    if lower_name.endswith(".txt"):
+        shutil.copy(tmp_path, os.path.join(txt_dir, original_name))
+    else:
+        ok, msg = await extract_with_7z(tmp_path, txt_dir, password=None)
+        if not ok and msg == "password_required_or_wrong":
+            PENDING[m.chat.id] = {
+                "type": "txtpwd",
+                "tmp_path": tmp_path,
+                "txt_dir": txt_dir,
+                "tag": tag,
+                "n": n,
+            }
+            await m.answer("Архив с .txt защищён. Пришлите пароль одним сообщением или /cancel.")
+            return
+        elif not ok:
+            await m.answer("Не удалось распаковать архив с .txt.")
+            rm_tree(tmp_path); rm_tree(txt_dir)
+            return
 
     out_tmp = os.path.join(WORK_DIR, f"anti-{tmp_id}")
     os.makedirs(out_tmp, exist_ok=True)
@@ -259,6 +439,15 @@ async def on_txt_pack(m: Message):
 
     await m.answer_document(FSInputFile(zip_path), caption=zip_name)
     rm_tree(tmp_path); rm_tree(txt_dir); rm_tree(out_tmp)
+
+
+@dp.message(F.document)
+async def on_document(m: Message):
+    mode = resolve_processing_mode(m)
+    if mode == "txt":
+        await handle_txt_upload(m)
+    else:
+        await handle_pack_upload(m)
 
 @dp.message(F.text & (F.chat.id.func(lambda cid: cid in PENDING)))
 async def on_txt_password(m: Message):
@@ -291,7 +480,11 @@ async def on_txt_password(m: Message):
     PENDING.pop(m.chat.id, None)
 
 async def main():
-    session = AiohttpSession(api=TelegramAPIServer.from_base(CFG.api_base))
+    api_server = TelegramAPIServer.from_base(
+        CFG.api_base,
+        is_local=CFG.api_is_local,
+    )
+    session = AiohttpSession(api=api_server)
     bot = Bot(CFG.bot_token, session=session)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
