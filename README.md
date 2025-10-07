@@ -1,4 +1,4 @@
-# secator-bot (Linux + Local Bot API, ZIP output)
+# tg-packs-bot (Linux + Local Bot API, ZIP output)
 
 Телеграм‑бот, работающий через **локально поднятый Telegram Bot API**. Принимает архивы
 от поставщиков (ZIP/RAR/7Z), распаковывает их в структурированные «пачки», прогоняет через
@@ -126,13 +126,13 @@ mkdir -p "$DATA_DIR"
 
 ## Systemd (опционально)
 ```ini
-# /etc/systemd/system/secator-bot.service
+# /etc/systemd/system/tg-packs-bot.service
 [Unit]
-Description=Secator Bot
+Description=Tg Packs Bot
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/secator-bot
+WorkingDirectory=/opt/tg-packs-bot
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/tg-packs-bot/.venv/bin/python -m bot.main
 EnvironmentFile=/opt/tg-packs-bot/.env
@@ -145,14 +145,7 @@ WantedBy=multi-user.target
 ```
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now secator-bot
-```
-
-## Тесты
-В проекте есть базовые pytest‑тесты для регрессии по датам. Запуск:
-```bash
-. .venv/bin/activate
-pytest
+sudo systemctl enable --now tg-packs-bot
 ```
 
 ## Тесты
