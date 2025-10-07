@@ -205,6 +205,9 @@ async def on_password(m: Message):
 async def on_txt_pack(m: Message):
     """Принимаем архив с .txt. Берём последний pack-info для чата (tag, n, day),
     запускаем Антисекатор по всем 'Input logs*' в BASES_DIR."""
+    if not m.document:
+        return
+
     last = get_last_pack_info(m.chat.id)
     tag = _get_tag_from_message(m) or (last and last["tag"])
     if not tag:
@@ -291,7 +294,11 @@ async def on_txt_password(m: Message):
     PENDING.pop(m.chat.id, None)
 
 async def main():
-    session = AiohttpSession(api=TelegramAPIServer.from_base(CFG.api_base))
+    api_server = TelegramAPIServer.from_base(
+        CFG.api_base,
+        is_local=CFG.api_is_local,
+    )
+    session = AiohttpSession(api=api_server)
     bot = Bot(CFG.bot_token, session=session)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
