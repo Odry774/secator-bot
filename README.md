@@ -1,8 +1,6 @@
 # secator-bot (Linux + Local Bot API, ZIP output)
 
-Телеграм‑бот, работающий через **локально поднятый Telegram Bot API**. Репозиторий проекта: [github.com/Odry774/secator-bot](https://github.com/Odry774/secator-bot).
-
-Принимает архивы
+Телеграм‑бот, работающий через **локально поднятый Telegram Bot API**. Принимает архивы
 от поставщиков (ZIP/RAR/7Z), распаковывает их в структурированные «пачки», прогоняет через
 универсальный сортёр, формирует выдачу «raw» и затем, после получения текстовых файлов, запускает
 «Антисекатор new» и отдаёт итоговые `logs` архивы. Весь пайплайн ориентирован на Linux‑сервер
@@ -56,8 +54,8 @@ sudo apt install -y p7zip-rar unrar
 
 # Клонирование и подготовка окружения
 cd /opt
-sudo git clone https://github.com/Odry774/secator-bot.git
-cd secator-bot
+sudo git clone <ваш-репозиторий> tg-packs-bot
+cd tg-packs-bot
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
@@ -136,8 +134,8 @@ After=network.target
 [Service]
 WorkingDirectory=/opt/secator-bot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/secator-bot/.venv/bin/python -m bot.main
-EnvironmentFile=/opt/secator-bot/.env
+ExecStart=/opt/tg-packs-bot/.venv/bin/python -m bot.main
+EnvironmentFile=/opt/tg-packs-bot/.env
 Restart=always
 User=www-data
 Group=www-data
@@ -157,11 +155,18 @@ sudo systemctl enable --now secator-bot
 pytest
 ```
 
+## Тесты
+В проекте есть базовые pytest‑тесты для регрессии по датам. Запуск:
+```bash
+. .venv/bin/activate
+pytest
+```
+
 ## Обновление проекта
 ```bash
-cd /opt/secator-bot
+cd /opt/tg-packs-bot
 sudo -u www-data git pull
-sudo systemctl restart secator-bot
+sudo systemctl restart tg-packs-bot
 ```
 
 На боевом сервере рекомендуется вести обновления через отдельную ветку и перед развёртыванием
