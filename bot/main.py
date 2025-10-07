@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import uuid
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
@@ -411,34 +412,34 @@ async def handle_txt_upload(m: Message):
     if last and last["tag"] == tag and last["day"] == today_key(dt):
         n = last["n"]
     else:
-        from .counters import _load, _save, today_key, get_next_number, set_counter
-        _ = get_next_number(tag, dt)
-        s = _load()
-        day = today_key(dt)
-        n = s["counters"][day][tag] - 1
-        set_counter(tag, dt, n)  # фиксируем как «следующее» = n
+        n = get_next_number(tag, dt)
 
     tmp_id = uuid.uuid4().hex
-    tmp_path = os.path.join(WORK_DIR, f"{tmp_id}-{m.document.file_name}")
+    original_name = m.document.file_name or "logs.txt"
+    tmp_path = os.path.join(WORK_DIR, f"{tmp_id}-{original_name}")
     await _download_document(m, tmp_path)
 
     txt_dir = os.path.join(WORK_DIR, f"txt-{tmp_id}")
     os.makedirs(txt_dir, exist_ok=True)
-    ok, msg = await extract_with_7z(tmp_path, txt_dir, password=None)
-    if not ok and msg == "password_required_or_wrong":
-        PENDING[m.chat.id] = {
-            "type": "txtpwd",
-            "tmp_path": tmp_path,
-            "txt_dir": txt_dir,
-            "tag": tag,
-            "n": n,
-        }
-        await m.answer("Архив с .txt защищён. Пришлите пароль одним сообщением или /cancel.")
-        return
-    elif not ok:
-        await m.answer("Не удалось распаковать архив с .txt.")
-        rm_tree(tmp_path); rm_tree(txt_dir)
-        return
+    lower_name = original_name.lower()
+    if lower_name.endswith(".txt"):
+        shutil.copy(tmp_path, os.path.join(txt_dir, original_name))
+    else:
+        ok, msg = await extract_with_7z(tmp_path, txt_dir, password=None)
+        if not ok and msg == "password_required_or_wrong":
+            PENDING[m.chat.id] = {
+                "type": "txtpwd",
+                "tmp_path": tmp_path,
+                "txt_dir": txt_dir,
+                "tag": tag,
+                "n": n,
+            }
+            await m.answer("Архив с .txt защищён. Пришлите пароль одним сообщением или /cancel.")
+            return
+        elif not ok:
+            await m.answer("Не удалось распаковать архив с .txt.")
+            rm_tree(tmp_path); rm_tree(txt_dir)
+            return
 
     out_tmp = os.path.join(WORK_DIR, f"anti-{tmp_id}")
     os.makedirs(out_tmp, exist_ok=True)
