@@ -205,6 +205,9 @@ async def on_password(m: Message):
 async def on_txt_pack(m: Message):
     """Принимаем архив с .txt. Берём последний pack-info для чата (tag, n, day),
     запускаем Антисекатор по всем 'Input logs*' в BASES_DIR."""
+    if not m.document:
+        return
+
     last = get_last_pack_info(m.chat.id)
     tag = _get_tag_from_message(m) or (last and last["tag"])
     if not tag:
