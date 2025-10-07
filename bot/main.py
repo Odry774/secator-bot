@@ -311,7 +311,11 @@ async def on_txt_password(m: Message):
     PENDING.pop(m.chat.id, None)
 
 async def main():
-    session = AiohttpSession(api=TelegramAPIServer.from_base(CFG.api_base))
+    api_server = TelegramAPIServer.from_base(
+        CFG.api_base,
+        is_local=CFG.api_is_local,
+    )
+    session = AiohttpSession(api=api_server)
     bot = Bot(CFG.bot_token, session=session)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
