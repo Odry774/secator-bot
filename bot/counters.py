@@ -50,13 +50,36 @@ def get_status(dt: datetime) -> Dict[str, int]:
 
 def set_chat_tag(chat_id: int, tag: str):
     s = _load()
-    s["chat"].setdefault(str(chat_id), {})
-    s["chat"][str(chat_id)]["tag"] = tag
+    entry = s["chat"].setdefault(str(chat_id), {})
+    entry["tag"] = tag
+    tags = entry.setdefault("tags", [])
+    if tag not in tags:
+        tags.append(tag)
     _save(s)
 
 def get_chat_tag(chat_id: int) -> str | None:
     s = _load()
     return s.get("chat", {}).get(str(chat_id), {}).get("tag")
+
+def get_chat_tags(chat_id: int) -> list[str]:
+    s = _load()
+    entry = s.get("chat", {}).get(str(chat_id), {})
+    tags = entry.get("tags", [])
+    current = entry.get("tag")
+    if current and current not in tags:
+        tags = tags + [current]
+    return list(tags)
+
+def set_chat_mode(chat_id: int, mode: str):
+    s = _load()
+    entry = s["chat"].setdefault(str(chat_id), {})
+    entry["mode"] = mode
+    _save(s)
+
+def get_chat_mode(chat_id: int) -> str:
+    s = _load()
+    entry = s.get("chat", {}).get(str(chat_id), {})
+    return entry.get("mode", "auto")
 
 def set_last_pack_info(chat_id: int, tag: str, n: int, day: str):
     s = _load()
