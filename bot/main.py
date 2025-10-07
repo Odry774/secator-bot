@@ -129,6 +129,21 @@ def resolve_processing_mode(m: Message) -> str:
 def moscow_now() -> datetime:
     return datetime.now(CFG.tz_moscow)
 
+def _pending_submission_dt(st: dict) -> datetime:
+    iso = st.get("dt_iso")
+    if iso:
+        try:
+            return datetime.fromisoformat(iso)
+        except ValueError:
+            pass
+    day = st.get("day")
+    if day:
+        try:
+            return datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=CFG.tz_moscow)
+        except ValueError:
+            pass
+    return moscow_now()
+
 def pack_folder_name(tag: str, n: int, dt: datetime) -> str:
     date_str = dt.strftime("%d.%m")
     return f"Input logs {tag}-{n}-pack{date_str}"
@@ -296,6 +311,7 @@ async def handle_pack_upload(m: Message):
             "tag": tag,
             "n": n,
             "day": today_key(dt),
+            "dt_iso": dt.isoformat(),
             "tries": 0,
             "original_name": name,
         }
@@ -360,8 +376,9 @@ async def on_password(m: Message):
         return
 
     # успешная распаковка — продолжим как обычно
-    dt = moscow_now()
     tag = st["tag"]; n = st["n"]
+    dt = _pending_submission_dt(st)
+    day_key = st.get("day") or today_key(dt)
     sorted_dir = os.path.join(WORK_DIR, f"sorted-{uuid.uuid4().hex}")
     copied = process_pack(st["pack_dir"], sorted_dir)
     zip_name = raw_pack_zip_name(tag, n, dt)
@@ -370,7 +387,7 @@ async def on_password(m: Message):
         await create_zip(st["pack_dir"], zip_path)
     else:
         await create_zip(sorted_dir, zip_path)
-    set_last_pack_info(m.chat.id, tag, n, today_key(dt))
+    set_last_pack_info(m.chat.id, tag, n, day_key)
     await m.answer_document(FSInputFile(zip_path), caption=f"{zip_name}")
     rm_tree(st["tmp_path"]); rm_tree(sorted_dir)
     PENDING.pop(m.chat.id, None)
